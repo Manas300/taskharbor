@@ -6,7 +6,7 @@ import "context"
 Handler will be the function that will process
 the different jobs.
 */
-type Handler func(ctx context.Context) error
+type Handler func(ctx context.Context, job Job) error
 
 /*
 Middleware will wrap the handler and return a new
