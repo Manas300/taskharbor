@@ -165,6 +165,83 @@ func (d *Driver) Reserve(
 }
 
 /*
+This marks a job as completed.
+*/
+func (d *Driver) Ack(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.closed {
+		return ErrDriverClosed
+	}
+
+	q, ok := d.inflightIndex[id]
+	if !ok {
+		return driver.ErrJobNotInflight
+	}
+
+	qs, ok := d.queues[q]
+	if !ok {
+		return driver.ErrJobNotInflight
+	}
+
+	if _, ok := qs.inflight[id]; !ok {
+		return driver.ErrJobNotInflight
+	}
+
+	delete(qs.inflight, id)
+	delete(d.inflightIndex, id)
+
+	return nil
+}
+
+/*
+This marks a reserved job as failed and moves it to DLQ storage.
+*/
+func (d *Driver) Fail(ctx context.Context, id string, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.closed {
+		return ErrDriverClosed
+	}
+
+	q, ok := d.inflightIndex[id]
+	if !ok {
+		return driver.ErrJobNotInflight
+	}
+
+	qs := d.queues[q]
+	if qs == nil {
+		return driver.ErrJobNotInflight
+	}
+
+	rec, ok := qs.inflight[id]
+	if !ok {
+		return driver.ErrJobNotInflight
+	}
+
+	delete(qs.inflight, id)
+	delete(d.inflightIndex, id)
+
+	qs.dlq[id] = DLQItem{
+		Record:   rec,
+		Reason:   reason,
+		FailedAt: time.Now().UTC(),
+	}
+
+	return nil
+}
+
+/*
 scheduledHeap is a min-heap ordered by RunAt.
 */
 type scheduledHeap []driver.JobRecord
