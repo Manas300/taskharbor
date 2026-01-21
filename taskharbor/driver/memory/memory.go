@@ -81,6 +81,22 @@ func (d *Driver) getQueueLocked(queue string) *queueState {
 }
 
 /*
+This function is required to promote due scheduled
+jobs into runnable. Called must hold the mutex lock.
+*/
+func (qs *queueState) promoteDueLocked(now time.Time) {
+	for i := 0; i < qs.scheduled.Len(); i++ {
+		next := qs.scheduled[i]
+		if next.RunAt.After(now) {
+			return
+		}
+		rec := heap.Pop(&qs.scheduled).(driver.JobRecord)
+		qs.runnable = append(qs.runnable, rec)
+
+	}
+}
+
+/*
 This function is responsible to enqueue a job into
 the queue. We need to check the RunAt attribute to
 add it to a scheduled heap or a basic FIFO queue.
@@ -100,6 +116,15 @@ func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
 	if d.closed {
 		return ErrDriverClosed
 	}
+
+	qs := d.getQueueLocked(rec.Queue)
+
+	if rec.RunAt.IsZero() {
+		qs.runnable = append(qs.runnable, rec)
+		return nil
+	}
+
+	heap.Push(&qs.scheduled, rec)
 	return nil
 }
 
@@ -112,7 +137,31 @@ func (d *Driver) Reserve(
 	ctx context.Context, queue string, now time.Time) (
 	driver.JobRecord, bool, error,
 ) {
-	return driver.JobRecord{}, true, nil
+	if err := ctx.Err(); err != nil {
+		return driver.JobRecord{}, false, err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.closed {
+		return driver.JobRecord{}, false, ErrDriverClosed
+	}
+
+	qs := d.getQueueLocked(queue)
+	qs.promoteDueLocked(now)
+
+	if len(qs.runnable) == 0 {
+		return driver.JobRecord{}, false, nil
+	}
+
+	rec := qs.runnable[0]
+	qs.runnable = qs.runnable[1:]
+
+	qs.inflight[rec.ID] = rec
+	d.inflightIndex[rec.ID] = queue
+
+	return rec, true, nil
 }
 
 /*
