@@ -13,6 +13,7 @@ type Config struct {
 	PollInterval time.Duration
 	DefaultQueue string
 	Clock        Clock
+	RetryPolicy  RetryPolicy
 }
 
 /*
@@ -112,5 +113,14 @@ This option sets the clock.
 func WithClock(c Clock) Option {
 	return func(cfg *Config) {
 		cfg.Clock = c
+	}
+}
+
+/*
+This option sets the retry policy.
+*/
+func WithRetryPolicy(p RetryPolicy) Option {
+	return func(cfg *Config) {
+		cfg.RetryPolicy = p
 	}
 }
