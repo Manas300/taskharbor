@@ -125,6 +125,8 @@ func (w *Worker) Run(ctx context.Context) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 
+			drvCtx := context.WithoutCancel(ctx)
+
 			h := w.getHandler(r.Type)
 			if h == nil {
 				_ = w.driver.Fail(ctx, r.ID, "no handler registered for job type")
@@ -147,7 +149,40 @@ func (w *Worker) Run(ctx context.Context) error {
 				return
 			}
 
-			_ = w.driver.Fail(ctx, r.ID, fmt.Sprintf("handler error: %v", err))
+			// ERROR PATH BELOW:
+			now := w.cfg.Clock.Now().UTC()
+			reason := fmt.Sprintf("handler error: %v", err)
+
+			// Unrecoverable means DLQ immediately.
+			if IsUnrecoverable(err) {
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
+				return
+			}
+
+			maxAttempts := w.maxAtteptsFor(r)
+
+			// If no policy configured, straight to DLQ
+			if w.cfg.RetryPolicy == nil || maxAttempts <= 0 {
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
+				return
+			}
+
+			// Check if we have any available attempts
+			nextAttempts := r.Attempts + 1
+			if nextAttempts >= maxAttempts {
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
+				return
+			}
+
+			delay := w.cfg.RetryPolicy.NextDelay(nextAttempts)
+			nextRunAt := now.Add(delay)
+
+			_ = w.driver.Retry(drvCtx, rec.ID, driver.RetryUpdate{
+				RunAt:     nextRunAt,
+				Attempts:  nextAttempts,
+				LastError: reason,
+				FailedAt:  now,
+			})
 		}(rec)
 	}
 
@@ -162,6 +197,21 @@ func (w *Worker) getHandler(jobType string) Handler {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.handlers[jobType]
+}
+
+/*
+This function returns the max attepts for a job.
+*/
+func (w *Worker) maxAtteptsFor(rec driver.JobRecord) int {
+	if rec.MaxAttempts > 0 {
+		return rec.MaxAttempts
+	}
+
+	if w.cfg.RetryPolicy == nil {
+		return 0
+	}
+
+	return w.cfg.RetryPolicy.MaxAttempts()
 }
 
 // Errors
