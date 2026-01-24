@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -61,7 +62,26 @@ func NewWorker(d driver.Driver, opts ...Option) *Worker {
 }
 
 /*
-This function will register a handler for a perticular
+This function is used to wrap our handlers around
+the different middlewares.
+*/
+func (w *Worker) wrapHandler(h Handler) Handler {
+	// Add the default middlewares
+	// 1. RecoverMiddleware to handle panics.
+	// 2. TimeoutMiddleware to handle timeouts.
+	middlewares := []Middleware{RecoverMiddleware(), TimeoutMiddleware()}
+
+	// Add any user middlewares
+	middlewares = append(middlewares, w.cfg.Middlewares...)
+
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		h = middlewares[i](h)
+	}
+	return h
+}
+
+/*
+This function will register a handler for a particular
 worker as a key-value pair so the worker knows what
 handler to call when a job is sent to it on its queue.
 */
@@ -77,7 +97,7 @@ func (w *Worker) Register(jobType string, h Handler) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	w.handlers[jobType] = h
+	w.handlers[jobType] = w.wrapHandler(h)
 	return nil
 }
 
@@ -100,9 +120,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		rec, ok, err := w.driver.Reserve(ctx, w.queue, now)
 		if err != nil {
 			// If context was cancelled gracefully shut down
-			if errors.Is(
-				err, context.Canceled) || errors.Is(
-				err, context.DeadlineExceeded) {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				break
 			}
 			return err
@@ -112,11 +130,12 @@ func (w *Worker) Run(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				// stop loop, go wait on inflight
-				break
+				goto shutdown
 			case <-time.After(w.cfg.PollInterval):
 			}
 			continue
 		}
+
 		// Concurrency limit
 		sem <- struct{}{}
 		wg.Add(1)
@@ -125,9 +144,15 @@ func (w *Worker) Run(ctx context.Context) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 
+			drvCtx := context.WithoutCancel(ctx)
+
 			h := w.getHandler(r.Type)
 			if h == nil {
-				_ = w.driver.Fail(ctx, r.ID, "no handler registered for job type")
+				_ = w.driver.Fail(
+					drvCtx,
+					r.ID,
+					"no handler registered for job type",
+				)
 				return
 			}
 
@@ -141,16 +166,60 @@ func (w *Worker) Run(ctx context.Context) error {
 				CreatedAt: r.CreatedAt,
 			}
 
-			err := h(ctx, job)
+			// Belt-and-suspenders panic safety: middleware should catch panics,
+			// but this ensures a panic never kills the worker goroutine.
+			err := func() (err error) {
+				defer func() {
+					if v := recover(); v != nil {
+						err = PanicError{Value: v, Stack: debug.Stack()}
+					}
+				}()
+				return h(ctx, job)
+			}()
+
 			if err == nil {
-				_ = w.driver.Ack(ctx, r.ID)
+				_ = w.driver.Ack(drvCtx, r.ID)
 				return
 			}
 
-			_ = w.driver.Fail(ctx, r.ID, fmt.Sprintf("handler error: %v", err))
+			// ERROR PATH BELOW:
+			now := w.cfg.Clock.Now().UTC()
+			reason := fmt.Sprintf("handler error: %v", err)
+
+			// Unrecoverable means DLQ immediately.
+			if IsUnrecoverable(err) {
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
+				return
+			}
+
+			maxAttempts := w.maxAttemptsFor(r)
+
+			// If no policy configured, straight to DLQ
+			if w.cfg.RetryPolicy == nil || maxAttempts <= 0 {
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
+				return
+			}
+
+			// Check if we have any available attempts
+			nextAttempts := r.Attempts + 1
+			if nextAttempts >= maxAttempts {
+				_ = w.driver.Fail(drvCtx, r.ID, reason)
+				return
+			}
+
+			delay := w.cfg.RetryPolicy.NextDelay(nextAttempts)
+			nextRunAt := now.Add(delay)
+
+			_ = w.driver.Retry(drvCtx, r.ID, driver.RetryUpdate{
+				RunAt:     nextRunAt,
+				Attempts:  nextAttempts,
+				LastError: reason,
+				FailedAt:  now,
+			})
 		}(rec)
 	}
 
+shutdown:
 	wg.Wait()
 	return nil
 }
@@ -162,6 +231,21 @@ func (w *Worker) getHandler(jobType string) Handler {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.handlers[jobType]
+}
+
+/*
+This function returns the max attempts for a job.
+*/
+func (w *Worker) maxAttemptsFor(rec driver.JobRecord) int {
+	if rec.MaxAttempts > 0 {
+		return rec.MaxAttempts
+	}
+
+	if w.cfg.RetryPolicy == nil {
+		return 0
+	}
+
+	return w.cfg.RetryPolicy.MaxAttempts()
 }
 
 // Errors

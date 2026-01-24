@@ -13,6 +13,8 @@ type Config struct {
 	PollInterval time.Duration
 	DefaultQueue string
 	Clock        Clock
+	RetryPolicy  RetryPolicy
+	Middlewares  []Middleware
 }
 
 /*
@@ -112,5 +114,23 @@ This option sets the clock.
 func WithClock(c Clock) Option {
 	return func(cfg *Config) {
 		cfg.Clock = c
+	}
+}
+
+/*
+This option sets the retry policy.
+*/
+func WithRetryPolicy(p RetryPolicy) Option {
+	return func(cfg *Config) {
+		cfg.RetryPolicy = p
+	}
+}
+
+/*
+This option sets the user middlewares.
+*/
+func WithMiddleware(mw Middleware) Option {
+	return func(cfg *Config) {
+		cfg.Middlewares = append(cfg.Middlewares, mw)
 	}
 }
