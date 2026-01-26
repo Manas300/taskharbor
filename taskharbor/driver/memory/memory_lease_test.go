@@ -26,7 +26,7 @@ func TestMemory_NoDoubleDeliverDuringValidLease(t *testing.T) {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
-	// Reserve job with a 10s lease
+	// Reserve job with a 10s lease.
 	_, lease1, ok, err := d.Reserve(ctx, "default", t0, 10*time.Second)
 	if err != nil {
 		t.Fatalf("reserve failed: %v", err)
