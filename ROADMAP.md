@@ -64,20 +64,20 @@ Each milestone should end with:
 - go test -race ./... (when concurrency is touched)
 - milestone checkbox marked done in this file
 
-Milestone 1: Docs + scaffolding
+Milestone 1: Docs + scaffolding (C)
 
 - Deliver: docs/architecture.md, docs/driver-contract.md, docs/semantics.md
 - Deliver: LICENSE, CONTRIBUTING.md, CODE_OF_CONDUCT.md, basic CI
 - Done when: a new dev can understand guarantees, driver rules, and workflow intent.
 
-Milestone 2: Core API + memory driver v0
+Milestone 2: Core API + memory driver v0 (C)
 
 - Deliver: Client, Worker, Backend, handler registry, options, codec interface
 - Deliver: memory driver enqueue, schedule(run_at), reserve, ack, fail, DLQ storage
 - Tests: enqueue executes, schedule timing, graceful shutdown
 - Done when: end-to-end run works with memory driver.
 
-Milestone 3: Reliability v0
+Milestone 3: Reliability v0 (C)
 
 - Deliver: retry policy + exponential backoff with jitter
 - Deliver: timeout per job + context cancellation
@@ -85,7 +85,7 @@ Milestone 3: Reliability v0
 - Tests: fails retry then DLQ, timeout path, panic path
 - Done when: failures behave deterministically.
 
-Milestone 4: Leases + crash recovery
+Milestone 4: Leases + crash recovery (C)
 
 - Deliver: reserve returns lease token + expiry
 - Deliver: extend lease API (heartbeat)
