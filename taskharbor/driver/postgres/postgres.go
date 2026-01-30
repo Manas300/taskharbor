@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/ARJ2211/taskharbor/taskharbor/driver"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -127,6 +128,51 @@ func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
 	}
 
 	return ErrNotImplemented
+}
+
+/*
+This function will select the next runnable job for the
+given queue and atomically lease it. If no job is there
+to be ran, return false
+*/
+func (d *Driver) Reserve(
+	ctx context.Context,
+	queue string,
+	now time.Time,
+	leaseFor time.Duration) (
+	driver.JobRecord, driver.Lease, bool, error,
+) {
+	if err := ctx.Err(); err != nil {
+		return driver.JobRecord{}, driver.Lease{}, false, err
+	}
+
+	if err := d.ensureOpen(); err != nil {
+		return driver.JobRecord{}, driver.Lease{}, false, err
+	}
+
+	return driver.JobRecord{}, driver.Lease{}, false, ErrNotImplemented
+}
+
+/*
+This function is required to extend the lease of an inflight
+job. On success set the extended duration of the lease.
+*/
+func (d *Driver) ExtendLease(
+	ctx context.Context,
+	id string,
+	token driver.LeaseToken,
+	now time.Time,
+	leaseFor time.Duration,
+) (driver.Lease, error) {
+	if err := ctx.Err(); err != nil {
+		return driver.Lease{}, err
+	}
+	if err := d.ensureOpen(); err != nil {
+		return driver.Lease{}, err
+	}
+
+	return driver.Lease{}, ErrNotImplemented
+
 }
 
 var (
