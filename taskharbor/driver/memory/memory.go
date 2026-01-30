@@ -29,6 +29,9 @@ type Driver struct {
 	closed        bool
 }
 
+// Compile time check that we implement contract.
+var _ driver.Driver = (*Driver)(nil)
+
 /*
 This is a record stored in the Dead Letter Queue.
 */
