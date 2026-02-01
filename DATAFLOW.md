@@ -121,5 +121,8 @@ flowchart TB
     VALIDNOTE --> G3
 
     VALIDNOTE@{ shape: rect}
+     U:::Pine
+    classDef Pine stroke-width:1px, stroke-dasharray:none, stroke:#254336, fill:#27654A, color:#FFFFFF
+    style U stroke:#00C853
 
 ```
