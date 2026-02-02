@@ -124,7 +124,7 @@ func (qs *queueState) promoteDueLocked(now time.Time) {
 This function will reclaim explired leases inside
 the Reserve function.
 */
-func (d *Driver) reclaimExpiredLeaseLocked(queue string, qs *queueState, now time.Time) {
+func (d *Driver) reclaimExpiredLeaseLocked(qs *queueState, now time.Time) {
 	for id, it := range qs.inflight {
 		if !it.lease.ExpiresAt.After(now) {
 			delete(qs.inflight, id)
@@ -198,7 +198,7 @@ func (d *Driver) Reserve(
 	}
 
 	qs := d.getQueueLocked(queue)
-	d.reclaimExpiredLeaseLocked(queue, qs, now)
+	d.reclaimExpiredLeaseLocked(qs, now)
 	qs.promoteDueLocked(now)
 
 	if len(qs.runnable) == 0 {
