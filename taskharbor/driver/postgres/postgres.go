@@ -156,6 +156,11 @@ func (d *Driver) Reserve(
 /*
 This function is required to extend the lease of an inflight
 job. On success set the extended duration of the lease.
+
+This should validate:
+  - the job is currently inflgiht
+  - the lease token matches.
+  - the lease as not expired at "now"
 */
 func (d *Driver) ExtendLease(
 	ctx context.Context,
