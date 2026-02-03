@@ -100,3 +100,13 @@ CREATE TABLE IF NOT EXISTS th_jobs (
 		t.Fatalf("second stmt does not look like th_jobs create: %s", stmts[1])
 	}
 }
+
+func TestMigrationsEmbedded(t *testing.T) {
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	if len(migs) == 0 {
+		t.Fatalf("expected at least 1 migration")
+	}
+}

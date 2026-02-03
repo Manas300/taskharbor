@@ -19,6 +19,7 @@ We will use go:embed to embed the
 migration files during compile time
 so it can be accessible @ run time.
 */
+//go:embed migrations/*.sql
 var migrationFS embed.FS
 
 /*
