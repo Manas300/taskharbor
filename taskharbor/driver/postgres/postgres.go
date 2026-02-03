@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,11 +124,67 @@ func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
 		return err
 	}
 
+	if err := rec.Validate(); err != nil {
+		return err
+	}
+
 	if err := d.ensureOpen(); err != nil {
 		return err
 	}
 
-	return ErrNotImplemented
+	d.mu.Lock()
+	closed := d.closed
+	pool := d.pool
+	d.mu.Unlock()
+
+	if closed {
+		return ErrDriverClosed
+	}
+	if pool == nil {
+		return ErrNilPool
+	}
+
+	var runAt any
+	if rec.RunAt.IsZero() {
+		runAt = nil
+	} else {
+		runAt = rec.RunAt.UTC()
+	}
+
+	var failedAt any
+	if rec.FailedAt.IsZero() {
+		failedAt = nil
+	} else {
+		failedAt = rec.FailedAt.UTC()
+	}
+
+	var idemKey any
+	if strings.TrimSpace(rec.IdempotencyKey) == "" {
+		idemKey = nil
+	} else {
+		idemKey = rec.IdempotencyKey
+	}
+
+	_, err := pool.Exec(ctx, QEnqueue,
+		rec.ID,
+		rec.Type,
+		rec.Queue,
+		rec.Payload,
+		runAt,
+		rec.Timeout.Nanoseconds(),
+		rec.CreatedAt.UTC(),
+		rec.Attempts,
+		rec.MaxAttempts,
+		rec.LastError,
+		failedAt,
+		"ready",
+		idemKey,
+	)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 /*
