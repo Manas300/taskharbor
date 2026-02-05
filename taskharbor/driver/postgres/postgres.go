@@ -243,7 +243,7 @@ func (d *Driver) Reserve(
 	if err != nil {
 		return driver.JobRecord{}, driver.Lease{}, false, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	var (
 		id             string
