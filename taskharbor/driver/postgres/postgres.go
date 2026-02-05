@@ -341,12 +341,71 @@ func (d *Driver) ExtendLease(
 	if err := ctx.Err(); err != nil {
 		return driver.Lease{}, err
 	}
+
 	if err := d.ensureOpen(); err != nil {
 		return driver.Lease{}, err
 	}
 
-	return driver.Lease{}, ErrNotImplemented
+	if leaseFor <= 0 {
+		return driver.Lease{}, driver.ErrInvalidLeaseDuration
+	}
 
+	now = now.UTC()
+	newExpiry := now.Add(leaseFor).UTC()
+
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return driver.Lease{}, err
+	}
+	defer func() { _ = tx.Conn().Close(ctx) }()
+
+	var dbTok string
+	var dbExp time.Time
+
+	err = tx.QueryRow(
+		ctx, QGetInflightLeaseForUpdate, id,
+	).Scan(&dbTok, &dbExp)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return driver.Lease{}, driver.ErrJobNotInflight
+		}
+		return driver.Lease{}, err
+	}
+
+	// Expired first, then mismatch
+	if !dbExp.After(now) {
+		return driver.Lease{}, driver.ErrLeaseExpired
+	}
+	if driver.LeaseToken(dbTok) != token {
+		return driver.Lease{}, driver.ErrLeaseMismatch
+	}
+
+	// Update the new expiry while row is locked in transaction
+	var updated time.Time
+	err = tx.QueryRow(
+		ctx,
+		QExtendLease,
+		newExpiry,
+		id,
+		string(token),
+	).Scan(&updated)
+	if err != nil {
+		// Safe check. SHOULD NEVER OCCUR!
+		if errors.Is(err, pgx.ErrNoRows) {
+			return driver.Lease{}, driver.ErrJobNotInflight
+		}
+		return driver.Lease{}, err
+	}
+	// Commit.
+	if err := tx.Commit(ctx); err != nil {
+		return driver.Lease{}, err
+	}
+
+	newLease := driver.Lease{
+		Token:     token,
+		ExpiresAt: updated.UTC(),
+	}
+	return newLease, nil
 }
 
 /*
