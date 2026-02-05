@@ -341,12 +341,55 @@ func (d *Driver) ExtendLease(
 	if err := ctx.Err(); err != nil {
 		return driver.Lease{}, err
 	}
+	if leaseFor <= 0 {
+		return driver.Lease{}, driver.ErrInvalidLeaseDuration
+	}
 	if err := d.ensureOpen(); err != nil {
 		return driver.Lease{}, err
 	}
 
-	return driver.Lease{}, ErrNotImplemented
+	now = now.UTC()
+	newExpiry := now.Add(leaseFor).UTC()
 
+	var updated time.Time
+	err := d.pool.QueryRow(ctx, QExtendLeaseAtomic, newExpiry, id, string(token), now).Scan(&updated)
+	if err == nil {
+		updatedLease := driver.Lease{
+			Token:     token,
+			ExpiresAt: updated.UTC(),
+		}
+		return updatedLease, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return driver.Lease{}, err
+	}
+
+	// No rows updated: classify error to match precedence:
+	// not inflight -> expired -> mismatch
+	var status string
+	var dbTok *string
+	var dbExp *time.Time
+
+	err2 := d.pool.QueryRow(ctx, QLeaseState, id).Scan(&status, &dbTok, &dbExp)
+	if err2 != nil {
+		if errors.Is(err2, pgx.ErrNoRows) {
+			return driver.Lease{}, driver.ErrJobNotInflight
+		}
+		return driver.Lease{}, err2
+	}
+
+	if status != "inflight" || dbTok == nil || dbExp == nil {
+		return driver.Lease{}, driver.ErrJobNotInflight
+	}
+	if !dbExp.UTC().After(now) {
+		return driver.Lease{}, driver.ErrLeaseExpired
+	}
+	if driver.LeaseToken(*dbTok) != token {
+		return driver.Lease{}, driver.ErrLeaseMismatch
+	}
+
+	// If we get here, it was a race (someone changed it between attempts).
+	return driver.Lease{}, driver.ErrJobNotInflight
 }
 
 /*
