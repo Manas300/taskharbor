@@ -341,71 +341,55 @@ func (d *Driver) ExtendLease(
 	if err := ctx.Err(); err != nil {
 		return driver.Lease{}, err
 	}
-
-	if err := d.ensureOpen(); err != nil {
-		return driver.Lease{}, err
-	}
-
 	if leaseFor <= 0 {
 		return driver.Lease{}, driver.ErrInvalidLeaseDuration
+	}
+	if err := d.ensureOpen(); err != nil {
+		return driver.Lease{}, err
 	}
 
 	now = now.UTC()
 	newExpiry := now.Add(leaseFor).UTC()
 
-	tx, err := d.pool.Begin(ctx)
-	if err != nil {
+	var updated time.Time
+	err := d.pool.QueryRow(ctx, QExtendLeaseAtomic, newExpiry, id, string(token), now).Scan(&updated)
+	if err == nil {
+		updatedLease := driver.Lease{
+			Token:     token,
+			ExpiresAt: updated.UTC(),
+		}
+		return updatedLease, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return driver.Lease{}, err
 	}
-	defer func() { _ = tx.Conn().Close(ctx) }()
 
-	var dbTok string
-	var dbExp time.Time
+	// No rows updated: classify error to match precedence:
+	// not inflight -> expired -> mismatch
+	var status string
+	var dbTok *string
+	var dbExp *time.Time
 
-	err = tx.QueryRow(
-		ctx, QGetInflightLeaseForUpdate, id,
-	).Scan(&dbTok, &dbExp)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	err2 := d.pool.QueryRow(ctx, QLeaseState, id).Scan(&status, &dbTok, &dbExp)
+	if err2 != nil {
+		if errors.Is(err2, pgx.ErrNoRows) {
 			return driver.Lease{}, driver.ErrJobNotInflight
 		}
-		return driver.Lease{}, err
+		return driver.Lease{}, err2
 	}
 
-	// Expired first, then mismatch
-	if !dbExp.After(now) {
+	if status != "inflight" || dbTok == nil || dbExp == nil {
+		return driver.Lease{}, driver.ErrJobNotInflight
+	}
+	if !dbExp.UTC().After(now) {
 		return driver.Lease{}, driver.ErrLeaseExpired
 	}
-	if driver.LeaseToken(dbTok) != token {
+	if driver.LeaseToken(*dbTok) != token {
 		return driver.Lease{}, driver.ErrLeaseMismatch
 	}
 
-	// Update the new expiry while row is locked in transaction
-	var updated time.Time
-	err = tx.QueryRow(
-		ctx,
-		QExtendLease,
-		newExpiry,
-		id,
-		string(token),
-	).Scan(&updated)
-	if err != nil {
-		// Safe check. SHOULD NEVER OCCUR!
-		if errors.Is(err, pgx.ErrNoRows) {
-			return driver.Lease{}, driver.ErrJobNotInflight
-		}
-		return driver.Lease{}, err
-	}
-	// Commit.
-	if err := tx.Commit(ctx); err != nil {
-		return driver.Lease{}, err
-	}
-
-	newLease := driver.Lease{
-		Token:     token,
-		ExpiresAt: updated.UTC(),
-	}
-	return newLease, nil
+	// If we get here, it was a race (someone changed it between attempts).
+	return driver.Lease{}, driver.ErrJobNotInflight
 }
 
 /*
