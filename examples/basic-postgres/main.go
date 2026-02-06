@@ -44,7 +44,7 @@ func main() {
 		log.Fatal("TASKHARBOR_DSN not set")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	pool, err := pgxpool.New(ctx, dsn)
