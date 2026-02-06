@@ -220,3 +220,40 @@ SELECT status, lease_token, lease_expires_at
 FROM th_jobs
 WHERE id = $1
 `
+
+/*
+QRetryAtomic performs the retry transition in one atomic statement.
+
+It clears the lease and moves the job back to 'ready' (scheduled is represented by run_at != NULL),
+but only if the job is inflight, the lease token matches, and the lease is still valid at "now".
+It also persists the retry metadata passed by the worker (attempts, last_error, failed_at, run_at).
+*/
+const QRetryAtomic = `
+UPDATE th_jobs
+SET status = 'ready',
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    run_at = $4,
+    attempts = $5,
+    last_error = $6,
+    failed_at = $7
+WHERE id = $1
+  AND status = 'inflight'
+  AND lease_token = $2
+  AND lease_expires_at > $3
+RETURNING id
+`
+
+/*
+QRetryState is the fallback read when QRetryAtomic affects 0 rows.
+
+We use it to classify the failure into:
+- not inflight (ready/done/dlq/missing)
+- lease expired at now
+- lease token mismatch
+*/
+const QRetryState = `
+SELECT status, lease_token, lease_expires_at
+FROM th_jobs
+WHERE id = $1
+`

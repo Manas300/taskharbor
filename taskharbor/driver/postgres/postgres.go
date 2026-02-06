@@ -469,12 +469,69 @@ func (d *Driver) Retry(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
 	if err := d.ensureOpen(); err != nil {
 		return err
 	}
 
-	return ErrNotImplemented
+	now = now.UTC()
+
+	var runAt any
+	if upd.RunAt.IsZero() {
+		runAt = nil
+	} else {
+		runAt = upd.RunAt.UTC()
+	}
+
+	var failedAt any
+	if upd.FailedAt.IsZero() {
+		failedAt = nil
+	} else {
+		failedAt = upd.FailedAt.UTC()
+	}
+
+	// Atomic success path
+	var ignored string
+	err := d.pool.QueryRow(ctx, QRetryAtomic,
+		id,
+		string(token),
+		now,
+		runAt,
+		upd.Attempts,
+		upd.LastError,
+		failedAt,
+	).Scan(&ignored)
+
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
+	// 0 rows updated: classify error (not inflight -> expired -> mismatch)
+	var status string
+	var dbTok *string
+	var dbExp *time.Time
+
+	err2 := d.pool.QueryRow(ctx, QRetryState, id).Scan(&status, &dbTok, &dbExp)
+	if err2 != nil {
+		if errors.Is(err2, pgx.ErrNoRows) {
+			return driver.ErrJobNotInflight
+		}
+		return err2
+	}
+
+	if status != "inflight" || dbTok == nil || dbExp == nil {
+		return driver.ErrJobNotInflight
+	}
+	if !dbExp.UTC().After(now) {
+		return driver.ErrLeaseExpired
+	}
+	if driver.LeaseToken(*dbTok) != token {
+		return driver.ErrLeaseMismatch
+	}
+
+	return driver.ErrJobNotInflight
 }
 
 /*

@@ -126,18 +126,13 @@ func TestRetry_Success_ImmediateAndScheduled(t *testing.T) {
 		t.Fatalf("Retry immediate: %v", err)
 	}
 
-	// Should be reservable right away
-	_, _, ok2, err := d.Reserve(ctx, "default", t0.Add(2*time.Second), 5*time.Second)
+	// Should be reservable right away (and gives us the lease we need for the next Retry)
+	_, lease2, ok2, err := d.Reserve(ctx, "default", t0.Add(2*time.Second), 5*time.Second)
 	if err != nil || !ok2 {
 		t.Fatalf("Reserve after retry: ok=%v err=%v", ok2, err)
 	}
 
-	// Now schedule via Retry (future RunAt)
-	_, lease2, ok3, err := d.Reserve(ctx, "default", t0.Add(3*time.Second), 5*time.Second)
-	if err != nil || !ok3 {
-		t.Fatalf("Reserve2: ok=%v err=%v", ok3, err)
-	}
-
+	// Now schedule via Retry (future RunAt) using the same inflight lease
 	future := t0.Add(30 * time.Second)
 	err = d.Retry(ctx, rec.ID, lease2.Token, t0.Add(4*time.Second), driver.RetryUpdate{
 		Attempts:  2,
@@ -150,17 +145,18 @@ func TestRetry_Success_ImmediateAndScheduled(t *testing.T) {
 	}
 
 	// Not reservable before due
-	_, _, ok4, err := d.Reserve(ctx, "default", t0.Add(10*time.Second), 5*time.Second)
+	_, _, ok3, err := d.Reserve(ctx, "default", t0.Add(10*time.Second), 5*time.Second)
 	if err != nil {
 		t.Fatalf("Reserve before due: %v", err)
 	}
-	if ok4 {
+	if ok3 {
 		t.Fatalf("expected ok=false before run_at")
 	}
 
 	// Reservable when due
-	_, _, ok5, err := d.Reserve(ctx, "default", future, 5*time.Second)
-	if err != nil || !ok5 {
-		t.Fatalf("Reserve at due: ok=%v err=%v", ok5, err)
+	_, _, ok4, err := d.Reserve(ctx, "default", future, 5*time.Second)
+	if err != nil || !ok4 {
+		t.Fatalf("Reserve at due: ok=%v err=%v", ok4, err)
 	}
+
 }
