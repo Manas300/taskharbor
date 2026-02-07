@@ -38,6 +38,13 @@ func defaultConfig() Config {
 		Clock:             RealClock{},
 		LeaseDuration:     30 * time.Second,
 		HeartbeatInterval: 0, // Computed in applyoptions.
+		RetryPolicy: NewExponentialBackoffPolicy(
+			200*time.Millisecond,
+			5*time.Second,
+			2.0,
+			0.20,
+			WithMaxAttempts(0), // 0 = no global cap; job.MaxAttempts controls DLQ cutoff
+		),
 	}
 	return c
 }

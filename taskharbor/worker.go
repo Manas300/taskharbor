@@ -301,15 +301,24 @@ func (w *Worker) getHandler(jobType string) Handler {
 This function returns the max attempts for a job.
 */
 func (w *Worker) maxAttemptsFor(rec driver.JobRecord) int {
-	if rec.MaxAttempts > 0 {
-		return rec.MaxAttempts
+	jobMax := rec.MaxAttempts
+
+	policyMax := 0
+	if w.cfg.RetryPolicy != nil {
+		policyMax = w.cfg.RetryPolicy.MaxAttempts()
 	}
 
-	if w.cfg.RetryPolicy == nil {
-		return 0
+	// If the job sets a max, use it.
+	if jobMax > 0 {
+		// If policy sets a cap, enforce it.
+		if policyMax > 0 && policyMax < jobMax {
+			return policyMax
+		}
+		return jobMax
 	}
 
-	return w.cfg.RetryPolicy.MaxAttempts()
+	// No job max: fall back to policy default.
+	return policyMax
 }
 
 // Errors
