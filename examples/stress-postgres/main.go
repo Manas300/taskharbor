@@ -99,7 +99,6 @@ func main() {
 
 	/*
 		// Optional: explicit retry policy.
-
 		rp := taskharbor.NewExponentialBackoffPolicy(
 			2*time.Second,
 			10*time.Second,
@@ -205,6 +204,10 @@ func main() {
 			runAt = time.Now().UTC().Add(time.Duration(rng.Intn(1500)) * time.Millisecond)
 		}
 
+		// IdempotencyKey: deterministic per logical job (scoped by queue on the DB side).
+		// If you rerun with the same seed and reset=false, duplicates will dedupe and return the original job id.
+		idemKey := fmt.Sprintf("stress:%d:%s:%d", *seed, q, i)
+
 		req := taskharbor.JobRequest{
 			Type: "stress:job",
 			Payload: StressPayload{
@@ -214,8 +217,9 @@ func main() {
 				WorkMS: work,
 				Body:   bodyStr,
 			},
-			Queue:       q,
-			MaxAttempts: *maxAttempts,
+			Queue:          q,
+			MaxAttempts:    *maxAttempts,
+			IdempotencyKey: idemKey,
 		}
 		if !runAt.IsZero() {
 			req.RunAt = runAt
