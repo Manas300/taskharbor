@@ -294,12 +294,19 @@ func (d *Driver) Ack(ctx context.Context, id string, token driver.LeaseToken, no
 		return err
 	}
 	nowNano := now.UTC().UnixNano()
-	ok, err := d.runAckScript(ctx, id, string(token), nowNano)
+	code, err := d.runAckScript(ctx, id, string(token), nowNano)
 	if err != nil {
 		return err
 	}
-	if ok {
+	switch code {
+	case 1:
 		return nil
+	case 2:
+		return driver.ErrJobNotInflight
+	case 3:
+		return driver.ErrLeaseMismatch
+	case 4:
+		return driver.ErrLeaseExpired
 	}
 	return d.classifyLeaseError(ctx, id, token, now)
 }

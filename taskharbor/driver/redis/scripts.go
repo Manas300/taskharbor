@@ -137,7 +137,8 @@ func (d *Driver) runExtendLeaseScript(ctx context.Context, id, token string, now
 	return n == 1, nil
 }
 
-// ack: check inflight + token + not expired, then DEL job and ZREM from inflight
+// ack: check inflight + token + not expired, then DEL job and ZREM from inflight.
+// Returns: 1 = success, 2 = not inflight, 3 = token mismatch, 4 = expired.
 const scriptAck = `
 local job_key = KEYS[1]
 local token = ARGV[1]
@@ -148,13 +149,13 @@ local status = redis.call('HGET', job_key, 'status')
 local db_tok = redis.call('HGET', job_key, 'lease_token')
 local db_exp = redis.call('HGET', job_key, 'lease_expires_at_nano')
 if status ~= 'inflight' or db_tok == false or db_exp == false then
-  return 0
+  return 2
 end
 if db_tok ~= token then
-  return 0
+  return 3
 end
 if tonumber(db_exp) <= now then
-  return 0
+  return 4
 end
 local queue = redis.call('HGET', job_key, 'queue')
 redis.call('DEL', job_key)
@@ -163,16 +164,20 @@ redis.call('ZREM', inflight_key, id)
 return 1
 `
 
-func (d *Driver) runAckScript(ctx context.Context, id, token string, nowNano int64) (bool, error) {
+// runAckScript returns (1=success, 2=not inflight, 3=token mismatch, 4=expired), or error.
+func (d *Driver) runAckScript(ctx context.Context, id, token string, nowNano int64) (int64, error) {
 	jobKey := d.keyJob(id)
 	keys := []string{jobKey}
 	args := []interface{}{token, strconv.FormatInt(nowNano, 10), d.opts.prefix, id}
 	v, err := d.client.Eval(ctx, scriptAck, keys, args...).Result()
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	n, _ := toInt64(v)
-	return n == 1, nil
+	n, ok := toInt64(v)
+	if !ok {
+		return 0, nil
+	}
+	return n, nil
 }
 
 // retry: back to ready/scheduled with new attempts/last_error, clear lease, ZREM from inflight
