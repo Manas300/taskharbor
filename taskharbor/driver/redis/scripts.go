@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 
+	"github.com/ARJ2211/taskharbor/taskharbor/driver"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -18,6 +19,60 @@ func toInt64(v interface{}) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// enqueue: atomically HSET job hash and RPUSH ready or ZADD scheduled (single script = atomic).
+// KEYS[1]=prefix, ARGV: id, queue, type, payload, run_at_nano, timeout_nano, created_at_nano, attempts, max_attempts, last_error, failed_at_nano, idempotency_key
+const scriptEnqueue = `
+local prefix = KEYS[1]
+local id = ARGV[1]
+local queue = ARGV[2]
+local job_key = prefix .. ":job:" .. id
+local ready_key = prefix .. ":queue:" .. queue .. ":ready"
+local sched_key = prefix .. ":queue:" .. queue .. ":scheduled"
+local run_at_nano = ARGV[5]
+redis.call('HSET', job_key,
+  'type', ARGV[3],
+  'queue', queue,
+  'payload', ARGV[4],
+  'run_at_nano', run_at_nano,
+  'timeout_nano', ARGV[6],
+  'created_at_nano', ARGV[7],
+  'attempts', ARGV[8],
+  'max_attempts', ARGV[9],
+  'last_error', ARGV[10],
+  'failed_at_nano', ARGV[11],
+  'idempotency_key', ARGV[12],
+  'status', 'ready',
+  'lease_token', '',
+  'lease_expires_at_nano', '0'
+)
+if run_at_nano == '0' or run_at_nano == '' then
+  redis.call('RPUSH', ready_key, id)
+else
+  redis.call('ZADD', sched_key, run_at_nano, id)
+end
+return 1
+`
+
+func (d *Driver) runEnqueueScript(ctx context.Context, rec *driver.JobRecord, runAtNano, createdAtNano, failedAtNano int64) error {
+	keys := []string{d.opts.prefix}
+	args := []interface{}{
+		rec.ID,
+		rec.Queue,
+		rec.Type,
+		string(rec.Payload),
+		strconv.FormatInt(runAtNano, 10),
+		strconv.FormatInt(rec.Timeout.Nanoseconds(), 10),
+		strconv.FormatInt(createdAtNano, 10),
+		rec.Attempts,
+		rec.MaxAttempts,
+		rec.LastError,
+		strconv.FormatInt(failedAtNano, 10),
+		rec.IdempotencyKey,
+	}
+	_, err := d.client.Eval(ctx, scriptEnqueue, keys, args...).Result()
+	return err
 }
 
 // reserve: reclaim expired -> promote due scheduled -> LPOP one -> set lease + add to inflight. returns id or nil
@@ -137,7 +192,8 @@ func (d *Driver) runExtendLeaseScript(ctx context.Context, id, token string, now
 	return n == 1, nil
 }
 
-// ack: check inflight + token + not expired, then DEL job and ZREM from inflight.
+// ack: check inflight + token + not expired, then mark job done (status=done, clear lease) and ZREM from inflight.
+// We keep the job hash for inspect/done parity with postgres; we do not DEL.
 // Returns: 1 = success, 2 = not inflight, 3 = token mismatch, 4 = expired.
 const scriptAck = `
 local job_key = KEYS[1]
@@ -158,7 +214,7 @@ if tonumber(db_exp) <= now then
   return 4
 end
 local queue = redis.call('HGET', job_key, 'queue')
-redis.call('DEL', job_key)
+redis.call('HSET', job_key, 'status', 'done', 'lease_token', '', 'lease_expires_at_nano', '0')
 local inflight_key = prefix .. ":queue:" .. queue .. ":inflight"
 redis.call('ZREM', inflight_key, id)
 return 1

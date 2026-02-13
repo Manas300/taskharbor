@@ -31,10 +31,11 @@ func New(ctx context.Context, addr string, opts ...Option) (*Driver, error) {
 		return nil, err
 	}
 	o := applyOptions(opts...)
-	client := redis.NewClient(&redis.Options{
-		Addr: addr,
-		DB:   o.db,
-	})
+	roc := &redis.Options{Addr: addr, DB: o.db}
+	for _, fn := range o.clientOpts {
+		fn(roc)
+	}
+	client := redis.NewClient(roc)
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
 		return nil, err
@@ -71,7 +72,7 @@ func (d *Driver) Close() error {
 	d.client = nil
 	d.mu.Unlock()
 	if ownClient && client != nil {
-		_ = client.Close()
+		return client.Close()
 	}
 	return nil
 }
@@ -88,13 +89,18 @@ func (d *Driver) ensureOpen() error {
 	return nil
 }
 
+// Per-queue we keep four structures: ready (list), scheduled (zset), inflight (zset), dlq (list).
 // key helpers — everything prefixed so you can share one Redis instance
-func (d *Driver) keyJob(id string) string   { return d.opts.prefix + ":job:" + id }
-func (d *Driver) keyReady(queue string) string {
-	return d.opts.prefix + ":queue:" + queue + ":ready"
-}
+func (d *Driver) keyJob(id string) string      { return d.opts.prefix + ":job:" + id }
+func (d *Driver) keyReady(queue string) string { return d.opts.prefix + ":queue:" + queue + ":ready" }
 func (d *Driver) keyScheduled(queue string) string {
 	return d.opts.prefix + ":queue:" + queue + ":scheduled"
+}
+func (d *Driver) keyInflight(queue string) string {
+	return d.opts.prefix + ":queue:" + queue + ":inflight"
+}
+func (d *Driver) keyDlq(queue string) string {
+	return d.opts.prefix + ":queue:" + queue + ":dlq"
 }
 
 func newLeaseToken() (driver.LeaseToken, error) {
@@ -105,7 +111,7 @@ func newLeaseToken() (driver.LeaseToken, error) {
 	return driver.LeaseToken(hex.EncodeToString(b)), nil
 }
 
-// Enqueue: write job hash, then either push to ready list (run now) or add to scheduled zset (run at RunAt).
+// Enqueue: atomically write job hash and add to ready list or scheduled zset (single Lua script).
 func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -117,7 +123,6 @@ func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
 		return err
 	}
 
-	jobKey := d.keyJob(rec.ID)
 	runAtNano := int64(0)
 	if !rec.RunAt.IsZero() {
 		runAtNano = rec.RunAt.UTC().UnixNano()
@@ -128,35 +133,7 @@ func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
 		failedAtNano = rec.FailedAt.UTC().UnixNano()
 	}
 
-	pipe := d.client.Pipeline()
-	pipe.HSet(ctx, jobKey, map[string]interface{}{
-		"type":               rec.Type,
-		"queue":              rec.Queue,
-		"payload":            rec.Payload,
-		"run_at_nano":        strconv.FormatInt(runAtNano, 10),
-		"timeout_nano":       strconv.FormatInt(rec.Timeout.Nanoseconds(), 10),
-		"created_at_nano":    strconv.FormatInt(createdAtNano, 10),
-		"attempts":           rec.Attempts,
-		"max_attempts":        rec.MaxAttempts,
-		"last_error":         rec.LastError,
-		"failed_at_nano":     strconv.FormatInt(failedAtNano, 10),
-		"idempotency_key":    rec.IdempotencyKey,
-		"status":             "ready",
-		"lease_token":        "",
-		"lease_expires_at_nano": "0",
-	})
-
-	if rec.RunAt.IsZero() {
-		pipe.RPush(ctx, d.keyReady(rec.Queue), rec.ID)
-	} else {
-		pipe.ZAdd(ctx, d.keyScheduled(rec.Queue), redis.Z{Score: float64(runAtNano), Member: rec.ID})
-	}
-
-	_, err := pipe.Exec(ctx)
-	if err != nil {
-		return err
-	}
-	return nil
+	return d.runEnqueueScript(ctx, &rec, runAtNano, createdAtNano, failedAtNano)
 }
 
 // Reserve: reclaim expired, promote due scheduled, pop one from ready, lease it. ok=false = nothing to do.
@@ -205,7 +182,8 @@ func (d *Driver) Reserve(
 	return rec, lease, true, nil
 }
 
-// loadJob: HGETALL the job hash, parse into JobRecord. Used after reserve and when we need to classify errors.
+// loadJob loads one job by exact key (prefix:job:id). HGETALL returns all fields of that single hash
+// in one round-trip — we are not scanning keys; the key is known (e.g. from reserve). O(fields) for one hash.
 func (d *Driver) loadJob(ctx context.Context, id string) (driver.JobRecord, error) {
 	jobKey := d.keyJob(id)
 	m, err := d.client.HGetAll(ctx, jobKey).Result()
@@ -285,7 +263,7 @@ func (d *Driver) ExtendLease(
 	return driver.Lease{}, d.classifyLeaseError(ctx, id, token, now)
 }
 
-// Ack: job done, remove from inflight. Fails if not inflight or wrong/expired lease.
+// Ack: mark job done (status=done, clear lease), remove from inflight. Job hash is kept for inspect/done (parity with postgres).
 func (d *Driver) Ack(ctx context.Context, id string, token driver.LeaseToken, now time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -373,7 +351,9 @@ func (d *Driver) Fail(
 	return d.classifyLeaseError(ctx, id, token, now)
 }
 
-// Script said "0 rows" — figure out why. Same order as postgres/memory: not inflight, then expired, then wrong token.
+// classifyLeaseError: retry/fail/extend Lua scripts only return 0 on failure; they don't say why.
+// We read the job hash once and return the appropriate error (not inflight → expired → wrong token),
+// in the same order as the postgres and memory drivers for consistent behavior.
 func (d *Driver) classifyLeaseError(ctx context.Context, id string, token driver.LeaseToken, now time.Time) error {
 	jobKey := d.keyJob(id)
 	status, _ := d.client.HGet(ctx, jobKey, "status").Result()
