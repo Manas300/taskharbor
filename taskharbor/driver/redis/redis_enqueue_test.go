@@ -27,7 +27,7 @@ func TestEnqueue_ValidationRejectsEmptyType(t *testing.T) {
 		Type:  "",
 		Queue: queue,
 	}
-	err := d.Enqueue(ctx, bad)
+	_, _, err := d.Enqueue(ctx, bad)
 	if err == nil {
 		t.Fatal("expected validation error for empty type")
 	}
@@ -54,7 +54,7 @@ func TestEnqueue_ThenReserveReturnsJob(t *testing.T) {
 	if err := rec.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 
@@ -86,7 +86,7 @@ func TestClosedDriver_EnqueueReturnsError(t *testing.T) {
 	}
 	dr.Close()
 
-	err = dr.Enqueue(ctx, driver.JobRecord{ID: "x", Type: "t", Queue: "closed-test", CreatedAt: time.Now()})
+	_, _, err = dr.Enqueue(ctx, driver.JobRecord{ID: "x", Type: "t", Queue: "closed-test", CreatedAt: time.Now()})
 	if err == nil {
 		t.Fatal("expected error when enqueue on closed driver")
 	}

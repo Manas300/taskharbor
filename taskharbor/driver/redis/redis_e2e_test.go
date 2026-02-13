@@ -27,7 +27,7 @@ func TestE2E_EnqueueReserveAck(t *testing.T) {
 	if err := rec.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 

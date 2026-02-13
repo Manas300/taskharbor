@@ -21,7 +21,7 @@ func TestFail_MovesToDLQ(t *testing.T) {
 		RunAt:     time.Time{},
 		CreatedAt: now,
 	}
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 

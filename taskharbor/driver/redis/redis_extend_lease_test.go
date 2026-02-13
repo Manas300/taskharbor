@@ -21,7 +21,7 @@ func TestExtendLease_PreventsReclaim(t *testing.T) {
 		Queue:     queue,
 		CreatedAt: t0,
 	}
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 
@@ -66,7 +66,7 @@ func TestExtendLease_ExpiredReturnsError(t *testing.T) {
 		Queue:     queue,
 		CreatedAt: t0,
 	}
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 

@@ -49,7 +49,7 @@ func TestReserve_SchedulePromotion(t *testing.T) {
 		RunAt:     runAt,
 		CreatedAt: t0,
 	}
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 
@@ -86,7 +86,7 @@ func TestReserve_NoDoubleDeliverWhileInflight(t *testing.T) {
 		RunAt:     time.Time{},
 		CreatedAt: now,
 	}
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +119,7 @@ func TestReserve_ReclaimExpiredLease(t *testing.T) {
 		Queue:     queue,
 		CreatedAt: t0,
 	}
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 

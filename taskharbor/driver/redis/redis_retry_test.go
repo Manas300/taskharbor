@@ -22,7 +22,7 @@ func TestRetry_MovesBackToScheduled(t *testing.T) {
 		RunAt:     time.Time{},
 		CreatedAt: t0,
 	}
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 

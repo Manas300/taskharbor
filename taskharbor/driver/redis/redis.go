@@ -112,15 +112,16 @@ func newLeaseToken() (driver.LeaseToken, error) {
 }
 
 // Enqueue: atomically write job hash and add to ready list or scheduled zset (single Lua script).
-func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
+// Returns (rec.ID, false, nil) on success. Idempotency dedupe (existed=true) not implemented yet.
+func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) (string, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", false, err
 	}
 	if err := rec.Validate(); err != nil {
-		return err
+		return "", false, err
 	}
 	if err := d.ensureOpen(); err != nil {
-		return err
+		return "", false, err
 	}
 
 	runAtNano := int64(0)
@@ -133,7 +134,11 @@ func (d *Driver) Enqueue(ctx context.Context, rec driver.JobRecord) error {
 		failedAtNano = rec.FailedAt.UTC().UnixNano()
 	}
 
-	return d.runEnqueueScript(ctx, &rec, runAtNano, createdAtNano, failedAtNano)
+	err := d.runEnqueueScript(ctx, &rec, runAtNano, createdAtNano, failedAtNano)
+	if err != nil {
+		return "", false, err
+	}
+	return rec.ID, false, nil
 }
 
 // Reserve: reclaim expired, promote due scheduled, pop one from ready, lease it. ok=false = nothing to do.

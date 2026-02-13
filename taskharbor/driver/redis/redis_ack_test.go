@@ -24,7 +24,7 @@ func TestAck_SuccessRemovesJob(t *testing.T) {
 		CreatedAt:   now,
 		MaxAttempts: 3,
 	}
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 
@@ -62,7 +62,7 @@ func TestAck_LeaseMismatchRejected(t *testing.T) {
 		Queue:     queue,
 		CreatedAt: now,
 	}
-	if err := d.Enqueue(ctx, rec); err != nil {
+	if _, _, err := d.Enqueue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 
